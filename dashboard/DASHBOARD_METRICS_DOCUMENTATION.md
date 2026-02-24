@@ -84,11 +84,13 @@ Influencer mới = COUNT(users WHERE createdAt >= [30 ngày trước] AND create
 
 **Cách tính**:
 ```
-Influencer hoạt động = COUNT(DISTINCT createdBy IN content_flow WHERE date >= 30 ngày trước)
+Influencer hoạt động = COUNT(DISTINCT user IN contents WHERE date >= 30 ngày trước AND date <= hôm nay)
 Tỷ lệ hoạt động     = ROUND(Influencer hoạt động / Tổng số Influencer × 100%, 1 chữ số thập phân)
 
 Ví dụ: 5 creators hoạt động / 48 tổng = 10.4%
 ```
+
+> **Nguồn dữ liệu**: Collection `contents` (không phải `content_flow`), field `user` (không phải `createdBy`). Query: `Distinct("user", {date: {$gte: start, $lte: end}})`
 
 **Ý nghĩa kinh doanh**:
 - Đo lường mức độ engagement thực tế của mạng lưới
@@ -159,12 +161,13 @@ ELSE:
 
 ### 3.1. Tổng số Video (Total Videos)
 
-**Định nghĩa**: Tổng số video được submit bởi influencer (bao gồm tất cả trạng thái).
+**Định nghĩa**: Tổng số video hợp lệ (không tính bị từ chối) được submit bởi influencer.
 
 **Cách tính**:
 ```
 Tổng số Video = SUM(event_analytic_daily.statistic.totalContent)
-              = Đã duyệt + Chờ duyệt + Từ chối
+              - SUM(event_analytic_daily.statistic.totalContentRejected)
+              = Đã duyệt + Chờ duyệt  (không tính Từ chối)
 ```
 
 **Phân tích chi tiết (Breakdown)**:
@@ -192,14 +195,14 @@ Rejected[platform] = SUM(event_analytic_daily.statistic.[platform].totalContentR
 
 Các nền tảng được tổng hợp: `facebook`, `facebookReel`, `youtube`, `youtubeShort`, `tiktok`, `instagram`, `instagramReel`
 
-**Card "Video theo nền tảng" (videosByPlatform breakdown)** — từ `content_flow`:
+**Card "Video theo nền tảng" (videosByPlatform breakdown)** — từ `event_analytic_daily`:
 ```
-Video[platform] = COUNT(content_flow WHERE platform = [platform])
-Approved        = COUNT(content_flow WHERE platform = [platform] AND status = "approved")
-Rejected        = COUNT(content_flow WHERE platform = [platform] AND status = "rejected")
+Video[platform]    = SUM(event_analytic_daily.statistic.[platform].totalContent)
+Approved[platform] = SUM(event_analytic_daily.statistic.[platform].totalContentApproved)
+Rejected[platform] = SUM(event_analytic_daily.statistic.[platform].totalContentRejected)
 ```
 
-> **Lưu ý**: `content_flow` không áp dụng filter theo date range, chỉ filter theo campaign (eventIds).
+> Tái sử dụng `GetPlatformBreakdown()` — có đầy đủ date filter. Đã migrate từ `content_flow` (v2.7.0).
 
 **Ví dụ thực tế**:
 ```
@@ -223,7 +226,11 @@ TikTok:   Tổng 108 | ✓ Đã duyệt 95  | ✗ Từ chối 13
 **Cách tính**:
 ```
 Tổng lượt xem = SUM(event_analytic_daily.statistic.view.total)
+              - SUM(event_analytic_daily.statistic.view.rejected)
+              (loại trừ rejected views)
 ```
+
+> **Lưu ý**: Backend API `/analytics/dashboard` hiện chưa trả field `viewRejected` riêng — FE dùng gross `view.total` tạm thời. Khi BE thêm field này, FE sẽ cập nhật sang net.
 
 **Bộ lọc áp dụng**: Campaign + From/To date range (xem Phần B)
 
@@ -247,6 +254,7 @@ Lượt xem[platform] = SUM(content_analytic_daily.view.value)
 **Cách tính**:
 ```
 Lượt xem[ngày] = SUM(user_event_analytic_daily.statistic.view.total)
+               - SUM(user_event_analytic_daily.statistic.view.rejected)
                  WHERE date = [ngày đó]
 ```
 
@@ -278,24 +286,25 @@ Tổng lượt xem = SUM(user_event_analytic_daily.statistic.view.total)
 
 ### 5.1. KPI card Tổng phí (Overview tab)
 
-Dữ liệu cash được tổng hợp từ `event_analytic_daily`, bao gồm 4 trạng thái con:
+Dữ liệu cash được tổng hợp từ `event_analytic_daily`:
 
 ```
-Tổng phí quảng cáo (Total) = SUM(event_analytic_daily.statistic.cash.total)
-                            = Pending + Completed + Transferred + Rejected
+Tổng phí quảng cáo (hiển thị) = SUM(cash.total) - SUM(cash.rejected)
+                               = Pending + Completed + Transferred  (loại trừ Rejected)
+                               = cashValid
 ```
 
-> `cash.total` **bao gồm cả tiền bị từ chối (Rejected)**, chỉ loại trừ `waiting_approved` (trạng thái video chờ duyệt — chưa phát sinh tiền thưởng).
+> **Lưu ý quan trọng**: KPI card hiển thị **cashValid** (loại trừ rejected), không phải `cash.total`.
+> Backend field `cash.completed` trong API response thực chất được gán = `cash.total - cash.rejected` (= cashValid) — đặt tên misleading, giá trị là cashValid.
 
-**Phân tách theo trạng thái**:
+**Các giá trị backend trả về**:
 ```
-Chờ xử lý (Pending)          = SUM(event_analytic_daily.statistic.cash.pending)
-Đã hoàn thành (Completed)     = SUM(event_analytic_daily.statistic.cash.completed)
-Đã chuyển khoản (Transferred) = SUM(event_analytic_daily.statistic.cash.transfer)
-Từ chối (Rejected)            = SUM(event_analytic_daily.statistic.cash.rejected)
+cash.total     = SUM(cash.total)     = Pending + Completed + Transferred + Rejected
+cash.rejected  = SUM(cash.rejected)
+cash.pending   = SUM(cash.pending)
+cash.completed = cash.total - cash.rejected  ← tên misleading, thực chất = cashValid
+cash.transferred = SUM(cash.transfer)
 ```
-
-> **Lưu ý**: `cash.completed` là giá trị dùng làm tử số khi tính CPV (xem mục 9).
 
 **Bộ lọc áp dụng**: Campaign + From/To date range
 
@@ -323,7 +332,7 @@ CashValid = SUM(event.statistic.totalCashPending
 **Ý nghĩa kinh doanh**:
 - Tracking chi phí thực tế của campaign
 - So sánh `CashValid` với `Budget` để biết mức độ giải ngân
-- `cash.completed` là cơ sở tính CPV (chi phí đã xác nhận / lượt xem)
+- `cashValid` (= `cash.total - cash.rejected`) là cơ sở tính CPV (xem mục 9.1)
 
 ---
 
@@ -339,7 +348,7 @@ Thích     (Likes)    = SUM(event_analytic_daily.statistic.like.total)
 Bình luận (Comments) = SUM(event_analytic_daily.statistic.comment.total)
 ```
 
-> **Chia sẻ (Shares) không tồn tại** trong schema hiện tại — field luôn trả về 0, không được thu thập từ các nền tảng.
+> **Chia sẻ (Shares) đã bị loại bỏ** — không được thu thập từ các nền tảng, field luôn = 0. Widget không hiển thị Shares.
 
 ---
 
@@ -354,8 +363,10 @@ Engagement Rate = (Thích + Bình luận) / Lượt xem × 100%
 
 **Cách tính trong biểu đồ Timeline** — chia cho số video (không phải views):
 ```
-Engagement[ngày] = (Likes + Comments) / totalVideos × 100%
-                   WHERE totalVideos > 0
+Engagement[ngày] = (Likes + Comments) / totalVideosNet × 100%
+                   WHERE totalVideosNet > 0
+
+totalVideosNet = totalContent - totalContentRejected
 ```
 
 > Timeline dùng `user_event_analytic_daily`, group by date. Engagement = 0 nếu không có video trong ngày đó.
@@ -387,19 +398,23 @@ UI hiển thị 2 components trong mục này.
 
 ### 7.1. Biểu đồ Phân bố Nền tảng (Donut chart)
 
-**Định nghĩa**: Tỷ lệ % số video theo từng nền tảng.
+**Định nghĩa**: Tỷ lệ % số video hợp lệ (không tính rejected) theo từng nền tảng.
 
 **Cách tính**:
 ```
-Video[platform]     = SUM(event_analytic_daily.statistic.[platform].totalContent)
-Phần trăm[platform] = Video[platform] / Tổng video × 100%
+VideoNet[platform]  = SUM(totalContent) - SUM(totalContentRejected)
+totalNetVideos      = SUM(VideoNet[all platforms])
+Phần trăm[platform] = VideoNet[platform] / totalNetVideos × 100%
 ```
 
 > Sub-platform được gộp lại trước khi tính: `facebook + facebookReel → Facebook`, `youtube + youtubeShort → YouTube`, `instagram + instagramReel → Instagram`
+> Percentage được tính lại client-side từ net values (không dùng % gross từ BE).
 
 **Nguồn**: `event_analytic_daily` — API `GET /analytics/platforms?withMetrics=true`
 
 **Bộ lọc**: Campaign + From/To date range
+
+**Hiển thị**: Legend và tooltip hiển thị cả % lẫn số video tuyệt đối — ví dụ: `"YouTube (72% · 1,234)"`
 
 ---
 
@@ -422,7 +437,7 @@ Lượt xem[platform] = SUM(content_analytic_daily.view.value)
 
 ## 8. Ngân sách (Budget)
 
-Widget "Tổng quan Ngân sách" hiển thị 4 chỉ số: progress bar, Used, Total, Remaining, và Burn Rate.
+Widget "Tổng quan Ngân sách" hiển thị 4 chỉ số: progress bar, Used (%), Total, Remaining.
 
 **Nguồn dữ liệu**: API `/analytics/dashboard` → `cash.cashValid` và `cash.budget` (xem mục 5.2)
 
@@ -450,18 +465,18 @@ Total = event.budget
 Remaining = Total - Used
 ```
 
-### 8.4. Burn Rate
+### 8.4. Phần trăm đã dùng (Used %)
 
 ```
-Burn Rate = ROUND(Used / Total × 100)%
+Used % = ROUND(Used / Total × 100)%
 ```
-
-> **Burn Rate chỉ là tỷ lệ % đã dùng** — bằng đúng số % trên progress bar, không phải tốc độ chi tiêu theo ngày (VND/ngày).
 
 **Màu sắc theo ngưỡng**:
 - ≤ 70%: Xanh (An toàn)
 - 71–85%: Vàng (Cảnh báo)
 - > 85%: Đỏ (Nguy hiểm)
+
+> **Lưu ý**: Trước đây widget hiển thị thêm block "Burn Rate" riêng — đã loại bỏ vì là alias của Used % (không thêm thông tin mới).
 
 **Ý nghĩa kinh doanh**:
 - Theo dõi mức độ giải ngân so với ngân sách phân bổ
@@ -477,16 +492,22 @@ CPV xuất hiện ở 2 nơi trên UI với **công thức tử số khác nhau*
 
 ### 9.1. KPI card CPV (Overview tab)
 
-Tính sẵn trong MongoDB aggregation pipeline (`event_analytic_dashboard.go`):
+Tính trong service layer sau khi aggregate từ `event_analytic_daily` (`dashboard_analytics.go`):
 
 ```
-CPV = SUM(event_analytic_daily.statistic.cash.completed)
-    / SUM(event_analytic_daily.statistic.view.total)
+totalCashValid = SUM(cash.total) - SUM(cash.rejected)
+              = pending + completed + transferred  (loại trừ rejected)
 
-Nếu view.total = 0 → CPV = 0
+totalViewValid = SUM(view.total) - SUM(view.rejected)
+
+CPV = totalCashValid / totalViewValid
+
+Nếu totalViewValid = 0 → CPV = 0
 ```
 
-> Tử số là `cash.completed` — chỉ tiền đã hoàn thành thanh toán.
+> **Tử số** là `cash.total - cash.rejected` (= cashValid), **không phải** `cash.completed`.
+> **Mẫu số** là `view.total - view.rejected`, **không phải** `view.total`.
+> Cả tử và mẫu đều loại trừ phần bị từ chối (rejected).
 
 **Bộ lọc**: Campaign + From/To date range
 
@@ -494,18 +515,33 @@ Nếu view.total = 0 → CPV = 0
 
 ### 9.2. CPV per campaign (Global tab — Campaign Portfolio Table)
 
-Tính trên backend sau khi aggregate (`filtered_campaigns.go`):
+Tính trên backend sau khi aggregate (`global_dashboard.go`):
 
 ```
-CPV = statistic.cash.total / totalViews
-    = ROUND(TotalCash / TotalViews × 100) / 100
+cashValid[campaign] = totalCashCompleted + totalCashPending + totalCashWaiting
+totalViewsNet       = SUM(view.total) - SUM(view.rejected)
 
-Nếu TotalViews = 0 → CPV = 0
+CPV = ROUND(cashValid / totalViewsNet × 100) / 100
+
+Nếu totalViewsNet = 0 → CPV = 0
 ```
 
-> Tử số là `cash.total` (gồm cả pending + completed + rejected) — **khác với KPI card**.
+> Tử số là `cashValid` (loại trừ rejected) — **nhất quán với KPI card** từ v2.8.0.
 
 **Bộ lọc**: theo từng campaign riêng lẻ, không có date range
+
+### 9.3. Danh sách Chiến dịch (Campaign Portfolio Table) — Logic chi tiết
+
+**Nguồn**: Collection `events` — toàn bộ campaigns (không filter theo status), sort `status ASC, name ASC` → active-first.
+
+| Cột | Công thức |
+|-----|-----------|
+| Videos | `SUM(totalContent) - SUM(totalContentRejected)` (net) |
+| Views | `SUM(view.total) - SUM(view.rejected)` (net) |
+| budgetUsed | `totalCashCompleted + totalCashPending + totalCashWaiting` (cashValid) |
+| CPV | `cashValid / viewsNet` |
+
+> Tất cả campaigns hiển thị, kể cả inactive/expired.
 
 ---
 
@@ -550,8 +586,12 @@ Ví dụ: 362 đã duyệt / 403 tổng = 89.83%
 **Hiển thị**:
 ```
 [■■■■■■■■■ 89.8% Đã duyệt][■ 5% Chờ duyệt][■ 5.2% Từ chối]
-Đã duyệt: 362 / 403
+Đã duyệt: 89.8% (362)
+Chờ duyệt: 5% (20)
+Từ chối: 5.2% (21)
 ```
+
+> Mỗi badge hiển thị cả % lẫn số video tuyệt đối. Tooltip cũng hiển thị `"Approved: 89.8% (362)"`.
 
 ### 10.2. Tỷ lệ duyệt theo nền tảng
 
@@ -762,8 +802,8 @@ Instagram: #E4405F
 |------------|---------|----------|------------|
 | Lượt xem | Views | - | Tổng số lần video được phát |
 | Tỷ lệ tương tác | Engagement Rate | ER | (Thích + Bình luận) / Lượt xem × 100% (Shares = 0, không có trong schema) |
-| Chi phí trên mỗi lượt xem | Cost Per View | CPV | Tổng phí quảng cáo / Tổng lượt xem |
-| Tỷ lệ hoạt động | Activity Rate | - | Creators submit content trong kỳ / Tổng creators × 100% |
+| Chi phí trên mỗi lượt xem | Cost Per View | CPV | (cash.total - cash.rejected) / (view.total - view.rejected) — KPI card loại trừ rejected ở cả tử và mẫu |
+| Tỷ lệ hoạt động | Activity Rate | - | COUNT(DISTINCT user IN contents trong kỳ) / Tổng creators × 100% |
 | Tỷ lệ nghỉ | Churn Rate | - | 100% - Tỷ lệ hoạt động |
 | Tốc độ sử dụng ngân sách | Burn Rate | - | % ngân sách đã dùng (= Percentage, alias của cashValid/budget × 100%). Không phải VND/ngày. |
 | Tỷ lệ duyệt | Approval Rate | - | Video đã duyệt / Tổng video submit × 100% |
@@ -854,6 +894,11 @@ GET /api/admin/analytics/creators/segments?eventId=...
 | 2.1.0 | 2026-02-24 | Rà soát lại 4 KPI global từ source code backend: sửa định nghĩa Influencer mới (đăng ký tài khoản), Tỷ lệ hoạt động (distinct users submit content), Tỷ lệ nghỉ (= 100% - Tỷ lệ hoạt động) |
 | 2.2.0 | 2026-02-24 | Chuẩn hóa toàn bộ tên chỉ số theo format "Tiếng Việt (English)" theo i18n |
 | 2.3.0 | 2026-02-24 | Rà soát và sửa section 10-12: Collection Approval là `contents` (không phải `content_flow`), field lý do từ chối là `reason` (không phải `rejectReason`), Transfer lấy từ collection `transfers` (không phải `cash_flow`), Trend ngưỡng flat ±0.5%, Glossary sửa Burn Rate và Engagement Rate |
+| 2.4.0 | 2026-02-24 | Sửa section 2.3 Activity Rate: nguồn dữ liệu là collection `contents` field `user` (không phải `content_flow` field `createdBy`) — xác nhận từ source code `global_dashboard.go` |
+| 2.5.0 | 2026-02-24 | Sửa section 9.1 CPV KPI card: tử số là `cash.total - cash.rejected` (cashValid), mẫu số là `view.total - view.rejected` — cả hai loại trừ rejected, xác nhận từ `dashboard_analytics.go` |
+| 2.6.0 | 2026-02-24 | Sửa section 5.1 Total Ad Spend: KPI card hiển thị cashValid (loại trừ rejected), không phải cash.total. Note rõ `cash.completed` trong API response là misleading name — thực chất = cashValid |
+| 2.7.0 | 2026-02-24 | Phase 01: Migrate videosByPlatform từ content_flow → event_analytic_daily (có date filter). Phase 03: Loại Shares khỏi Engagement formula và widget. Section 3.1 Total Videos dùng net (loại rejected). Section 3.2 Card videosByPlatform dùng event_analytic_daily |
+| 2.8.0 | 2026-02-24 | Phase 04: Campaign Portfolio Table — Videos/Views/budgetUsed/CPV đều dùng net values. Thêm section 9.3. Phase 05: Timeline Views/Videos loại rejected. Phase 06: Interaction widget ẩn Shares. Phase 07: Budget widget xóa Burn Rate block (alias của Used%). Phase 08: Approval chart hiển thị counts bên cạnh %. Phase 09: Platform donut chart dùng net video counts, tính lại % client-side. Phase 11: Creator KPI cards + bảng Danh sách Influencer loại rejected |
 
 ---
 
