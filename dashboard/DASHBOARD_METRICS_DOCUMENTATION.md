@@ -14,7 +14,9 @@
   - [9. CPV (Cost Per View)](#9-cpv-cost-per-view)
   - [10. Duyệt nội dung (Approval)](#10-duyệt-nội-dung-approval)
 - **Phần C — Chỉ số Chuyển khoản (Tab Admin)**
-  - [11. Chuyển khoản (Transfer)](#11-chuyển-khoản-transfer)
+    - [11. Chuyển khoản (Transfer)](#11-chuyển-khoản-transfer)
+- **Phần D — Xuất dữ liệu (Export)**
+  - [12. Chức năng Xuất dữ liệu](#12-chức-năng-xuất-dữ-liệu)
 
 ---
 
@@ -681,7 +683,158 @@ Tỷ lệ thành công = (TotalRequestSuccess / TotalRequests) × 100%
 
 ---
 
-## 12. Xu hướng (Trend Indicators)
+---
+
+## Phần D — Xuất dữ liệu (Export)
+
+---
+
+## 12. Chức năng Xuất dữ liệu
+
+Cho phép xuất dữ liệu dashboard theo bộ lọc hiện tại ra file Excel (XLSX) hoặc CSV.
+
+### 12.1. Cách sử dụng
+
+1. Chọn bộ lọc (chiến dịch, khoảng thời gian, creator) trên giao diện
+2. Nhấn nút **Xuất dữ liệu**
+3. Chọn định dạng file: **XLSX** (một file nhiều sheet) hoặc **CSV** (file ZIP chứa nhiều CSV)
+4. Chọn loại dữ liệu cần xuất (có thể chọn nhiều)
+5. Nhấn **Xuất** → hệ thống tạo file bất đồng bộ → tự động chuyển sang trang **Dữ liệu** trong Admin để tải về
+
+> **Lưu ý**: File được tạo ở background (bất đồng bộ). Sau khi nhấn Xuất, trang tự động chuyển sang Admin/Data sau 1.5 giây để xem tiến trình.
+
+---
+
+### 12.2. Loại dữ liệu xuất
+
+| Loại | Sheet/File | Nguồn dữ liệu | Bộ lọc áp dụng |
+|------|-----------|---------------|----------------|
+| **Chiến dịch** (`campaigns`) | Sheet "campaigns" | Collection `event_analytic_daily` (cùng pipeline với UI) | Event IDs, Date range (`date`) |
+| **Creator** (`creators`) | Sheet "creators" | Collection `user_events` | Event IDs, Partner, Creator IDs (`user $in`), Date range (`createdAt`) |
+| **Thanh toán** (`payments`) | Sheet "payments" | Collection `transfers` | Partner, Event IDs (`event $in`), Date range (`createdAt`) |
+| **Nội dung** (`contents`) | Sheet "contents" | Collection `contents` | Event IDs, Partner, Creator IDs (`createdBy $in`), Date range (`createdAt`) |
+
+---
+
+### 12.3. Định dạng file
+
+#### XLSX (Excel)
+- **1 file `.xlsx`** chứa nhiều sheet, mỗi sheet = 1 loại dữ liệu đã chọn
+- Có thêm sheet **"Export Info"** chứa metadata (tên xuất, ngày xuất, bộ lọc đã dùng)
+- Tên file: `{tên_xuất}_{DD_MM_YYYY_HH_MM_SS}.xlsx`
+
+#### CSV
+- **1 file `.zip`** chứa nhiều file CSV, mỗi file = 1 loại dữ liệu đã chọn
+- Tên các file bên trong: `campaigns.csv`, `creators.csv`, `payments.csv`, `contents.csv`
+- Tên file zip: `{tên_xuất}_{DD_MM_YYYY_HH_MM_SS}.zip`
+
+---
+
+### 12.4. Các cột dữ liệu
+
+#### Sheet Chiến dịch (Campaigns)
+
+> **Nguồn**: Dùng cùng pipeline với UI (`GetFilteredCampaignsFromDailyPipeline` — bắt đầu từ `event_analytic_daily`, group by event, lookup `events`). Metrics được tính theo **date range đã chọn**, không phải all-time.
+
+| Cột | Mô tả | Công thức |
+|-----|-------|-----------|
+| STT | Số thứ tự | — |
+| Tên chiến dịch | Tên campaign | `event.name` |
+| Trạng thái | Trạng thái campaign | `event.status` |
+| Số video | Video hợp lệ (không tính bị từ chối) | `totalContent - totalContentRejected` |
+| Lượt xem | Tổng lượt xem (bao gồm rejected views) | `SUM(statistic.view.total)` |
+| Ngân sách | Ngân sách được phân bổ | `event.budget` |
+| Ngân sách đã dùng | Chi phí hợp lệ (loại rejected) | `SUM(cash.total) - SUM(cash.rejected)` |
+| CPV | Chi phí/lượt xem hợp lệ | `cashNotRejected / viewsNotRejected`, làm tròn 2 chữ số |
+
+#### Sheet Creator
+
+| Cột | Mô tả |
+|-----|-------|
+| STT | Số thứ tự |
+| Tên Creator | `user.name` (join từ users collection) |
+| User ID | `userEvent.user` (ObjectID) |
+| Nền tảng | "Multiple" |
+| Số video | `userEvent.statistic.totalContentApproved` |
+| Lượt xem | Tổng TikTok + YouTube + Facebook views |
+| Lượt thích | Tổng TikTok + YouTube + Facebook likes |
+| Engagement (%) | (Thích / Lượt xem) × 100 |
+| Thanh toán | `userEvent.statistic.cashTotal.completed` |
+| Hoàn tiền | `userEvent.statistic.cashBonus.completed` |
+
+#### Sheet Thanh toán (Payments)
+
+| Cột | Mô tả |
+|-----|-------|
+| STT | Số thứ tự |
+| Tên Creator | `transfer.name` |
+| Video được duyệt | `transfer.statistic.requestSuccessTotal` |
+| Tổng lượt xem | (tạm thời = 0, cần aggregate) |
+| Số tiền thanh toán | `transfer.statistic.cashRequestSuccessTotal` |
+| Hoàn tiền | (tạm thời = 0) |
+| Trạng thái | `transfer.status` |
+| Ngày chuyển | `transfer.createdAt` |
+
+#### Sheet Nội dung (Contents)
+
+| Cột | Mô tả |
+|-----|-------|
+| STT | Số thứ tự |
+| Content ID | `content._id` |
+| Creator | `content.author` |
+| Nền tảng | `content.source` |
+| Lượt xem | `content.statistic.view.total` |
+| Lượt thích | `content.statistic.like.total` |
+| Bình luận | `content.statistic.comment.total` |
+| Trạng thái | `content.status` |
+| Ngày tạo | `content.createdAt` |
+
+---
+
+### 12.5. Bộ lọc áp dụng khi xuất
+
+Bộ lọc được lấy từ trạng thái bộ lọc **hiện tại** trên giao diện dashboard tại thời điểm nhấn Xuất:
+
+| Bộ lọc | Field gửi lên | Cách xử lý backend |
+|--------|--------------|-------------------|
+| Chiến dịch | `events: string[]` (mảng Event ObjectID) | `$in` query trên field tương ứng |
+| Creator | `users: string[]` (mảng User ObjectID) | `$in` query trên `user` / `createdBy` |
+| Từ ngày | `fromAt: string` (ISO 8601 full, ví dụ `"2026-01-25T00:00:00.000Z"`) | `createdAt >= fromAt` |
+| Đến ngày | `toAt: string` (ISO 8601 full, ví dụ `"2026-02-25T23:59:59.999Z"`) | `createdAt <= toAt` |
+
+> **Lưu ý**: Nếu không chọn chiến dịch cụ thể (All Campaigns), `events` = `[]` → **không filter** → lấy toàn bộ.
+> Nếu không chọn creator, `users` = `[]` → lấy tất cả creator.
+
+---
+
+### 12.6. Giới hạn
+
+- Tối đa **50.000 dòng** mỗi loại dữ liệu (`MaxExportRows = 50000`)
+- File được tạo ở background, trạng thái: `waiting` → `running` → `completed` / `failed`
+- Tối đa **2 file** đang xử lý đồng thời (queue-based)
+- File lưu trên MinIO, link tải có hiệu lực **15 phút** (presigned URL)
+
+---
+
+### 12.7. Loại export (Type) trong Admin
+
+Trong trang Admin > Dữ liệu, cột **Loại** hiển thị nhãn tương ứng:
+
+| Type (DB) | Nhãn hiển thị |
+|-----------|--------------|
+| `dashboard_multi` | Dashboard - Tổng hợp |
+| `dashboard_campaigns` | Dashboard - Chiến dịch |
+| `dashboard_creators` | Dashboard - Creator |
+| `dashboard_payments` | Dashboard - Thanh toán |
+| `creator_analytics` | Thống kê creator |
+| `transfer_user_cash` | Chuyển tiền người dùng |
+| `content` | Nội dung |
+| `reconciliation_item` | Đối soát |
+| `transfer_withdraw` | Rút tiền |
+
+---
+
+## 13. Xu hướng (Trend Indicators)
 
 ### 12.1. Cách tính Trend
 
@@ -899,6 +1052,8 @@ GET /api/admin/analytics/creators/segments?eventId=...
 | 2.6.0 | 2026-02-24 | Sửa section 5.1 Total Ad Spend: KPI card hiển thị cashValid (loại trừ rejected), không phải cash.total. Note rõ `cash.completed` trong API response là misleading name — thực chất = cashValid |
 | 2.7.0 | 2026-02-24 | Phase 01: Migrate videosByPlatform từ content_flow → event_analytic_daily (có date filter). Phase 03: Loại Shares khỏi Engagement formula và widget. Section 3.1 Total Videos dùng net (loại rejected). Section 3.2 Card videosByPlatform dùng event_analytic_daily |
 | 2.8.0 | 2026-02-24 | Phase 04: Campaign Portfolio Table — Videos/Views/budgetUsed/CPV đều dùng net values. Thêm section 9.3. Phase 05: Timeline Views/Videos loại rejected. Phase 06: Interaction widget ẩn Shares. Phase 07: Budget widget xóa Burn Rate block (alias của Used%). Phase 08: Approval chart hiển thị counts bên cạnh %. Phase 09: Platform donut chart dùng net video counts, tính lại % client-side. Phase 11: Creator KPI cards + bảng Danh sách Influencer loại rejected |
+| 2.9.0 | 2026-02-25 | Thêm Phần D — Xuất dữ liệu (section 12): mô tả chức năng export, các loại dữ liệu (campaigns/creators/payments/contents), định dạng file (XLSX/CSV+ZIP), bộ lọc áp dụng, giới hạn, bảng cột dữ liệu, và mapping type → nhãn hiển thị trong Admin |
+| 2.10.0 | 2026-02-25 | Cập nhật section 12.2 & 12.4: Export campaigns nay dùng cùng pipeline với UI (`GetFilteredCampaignsFromDailyPipeline` từ `event_analytic_daily`, filter theo `date` range). Bảng cột campaigns: bỏ cột Engagement, Ngày tạo, Số creators; thêm Ngân sách đã dùng với công thức đúng. Videos = net (loại rejected). CPV tính đúng (cashNotRejected / viewsNotRejected) |
 
 ---
 
